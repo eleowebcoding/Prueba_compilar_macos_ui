@@ -6,10 +6,15 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number'
+        required: false
+        default: '3.0.0'
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-14
     
     steps:
     - name: Checkout code
@@ -25,91 +30,88 @@ jobs:
       with:
         flutter-version: '3.24.0'
         channel: 'stable'
+        cache: true
         
-    - name: Install Python dependencies
+    - name: Configure Flutter
+      run: |
+        flutter config --no-analytics
+        flutter precache --macos
+        flutter doctor -v
+        
+    - name: Install Flet
       run: |
         python -m pip install --upgrade pip
         pip install flet
         
-    - name: Verify Flet installation
+    - name: Verify setup
       run: |
-        flet --version
-        python -c "import flet; print(f'Flet version: {flet.__version__}')"
+        echo "✅ Python: $(python --version)"
+        echo "✅ Flutter: $(flutter --version | head -1)"
+        echo "✅ Flet: $(flet --version)"
+        echo "✅ Files: $(ls -la cronux_gui_v3.py cli/ assets/)"
         
     - name: Build macOS app
+      env:
+        FLET_CLI_NO_RICH_OUTPUT: "true"
       run: |
         flet build macos \
+          --module-name "cronux_gui_v3" \
           --product "Cronux" \
           --project cronux \
-          --build-version 3.0.0 \
-          --build-number ${{ github.run_number }} \
-          --org com.cronux \
-          --bundle-id com.cronux.gui \
+          --build-version "${{ github.event.inputs.version || '3.0.0' }}" \
+          --build-number "${{ github.run_number }}" \
+          --org "com.cronux" \
+          --bundle-id "com.cronux.gui" \
           --description "Sistema de control de versiones local" \
           --copyright "Copyright © 2024 Cronux" \
-          --yes
+          --yes \
+          --no-rich-output
           
-    - name: Verify build
+    - name: Find and verify app
       run: |
-        ls -la build/macos/
-        if [ -d "build/macos/Cronux.app" ]; then
-          echo "✅ App bundle created successfully"
-          du -sh build/macos/Cronux.app
+        APP_PATH=$(find . -name "*.app" -type d | head -1)
+        if [ -n "$APP_PATH" ]; then
+          echo "✅ App found: $APP_PATH"
+          echo "APP_PATH=$APP_PATH" >> $GITHUB_ENV
+          du -sh "$APP_PATH"
         else
-          echo "❌ App bundle not found"
+          echo "❌ App not found"
+          find . -name "*Cronux*" -type f 2>/dev/null || echo "No Cronux files found"
           exit 1
         fi
         
     - name: Create DMG
       run: |
-        # Crear DMG usando hdiutil
-        hdiutil create -volname "Cronux" \
-          -srcfolder build/macos/Cronux.app \
-          -ov -format UDZO \
-          Cronux-v3.0.0-build${{ github.run_number }}.dmg
-          
-        # Verificar DMG
-        ls -la *.dmg
+        DMG_NAME="Cronux-v${{ github.event.inputs.version || '3.0.0' }}-build${{ github.run_number }}"
+        hdiutil create -volname "Cronux" -srcfolder "$APP_PATH" -ov -format UDZO "${DMG_NAME}.dmg"
+        echo "DMG_NAME=${DMG_NAME}" >> $GITHUB_ENV
+        echo "✅ DMG created: ${DMG_NAME}.dmg ($(du -sh "${DMG_NAME}.dmg" | cut -f1))"
         
-    - name: Upload DMG artifact
+    - name: Upload DMG
       uses: actions/upload-artifact@v4
       with:
-        name: Cronux-macOS-v3.0.0-build${{ github.run_number }}
-        path: Cronux-v3.0.0-build${{ github.run_number }}.dmg
-        
-    - name: Upload App Bundle artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: Cronux-App-Bundle-v3.0.0-build${{ github.run_number }}
-        path: build/macos/Cronux.app
+        name: ${{ env.DMG_NAME }}
+        path: ${{ env.DMG_NAME }}.dmg
+        retention-days: 30
         
     - name: Create Release (on tag)
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
       with:
-        files: |
-          Cronux-v3.0.0-build${{ github.run_number }}.dmg
+        files: ${{ env.DMG_NAME }}.dmg
         body: |
-          ## Cronux GUI v3.0.0 - Build ${{ github.run_number }}
+          ## Cronux GUI ${{ github.event.inputs.version || '3.0.0' }}
           
           ### 📦 Instalación
-          1. Descarga `Cronux-v3.0.0-build${{ github.run_number }}.dmg`
-          2. Abre el DMG
-          3. Arrastra Cronux.app a Applications
-          4. Ejecuta desde Launchpad
+          1. Descarga el DMG
+          2. Arrastra Cronux.app a Applications  
+          3. Ejecuta desde Launchpad
           
           ### ✨ Características
-          - ✅ Icono único (sin doble icono)
+          - ✅ Sin doble icono (compilado con Flutter)
           - ✅ Interfaz nativa de macOS
-          - ✅ Compilado con Flutter/Flet
-          - ✅ Optimizado para macOS 14+
+          - ✅ Universal binary (Intel + Apple Silicon)
           
-          ### 🔧 Información Técnica
-          - Compilado en: macOS ${{ runner.os }}
-          - Python: 3.11
-          - Flutter: 3.19.0
-          - Flet: Latest
-          - Build: ${{ github.run_number }}
-          - Commit: ${{ github.sha }}
+          Build: ${{ github.run_number }} | Commit: ${{ github.sha }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
