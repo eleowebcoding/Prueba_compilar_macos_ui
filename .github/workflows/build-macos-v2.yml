@@ -72,6 +72,7 @@ jobs:
           --bundle-id com.cronux.gui \
           --description "Sistema de control de versiones local" \
           --copyright "Copyright © 2024 Cronux" \
+          --yes \
           --verbose
           
     - name: Verify build output
