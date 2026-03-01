@@ -80,12 +80,106 @@ jobs:
           exit 1
         fi
         
-    - name: Create DMG
+    - name: Sign app (ad-hoc for GitHub Actions)
       run: |
+        echo "🔐 Signing app with ad-hoc signature..."
+        # Usar firma ad-hoc en GitHub Actions (para evitar problemas de Gatekeeper)
+        codesign --force --deep --sign - "$APP_PATH"
+        
+        # Verificar firma
+        codesign --verify --deep --verbose=2 "$APP_PATH"
+        echo "✅ App signed successfully"
+        
+    - name: Create custom DMG
+      run: |
+        echo "🎨 Creating custom DMG with professional design..."
+        
+        # Crear imagen de fondo personalizada
+        DMG_BACKGROUND="dmg_background.png"
+        
+        # Usar ImageMagick si está disponible, sino crear imagen simple
+        if command -v convert &> /dev/null; then
+          convert -size 600x400 gradient:#f8f9fa-#e9ecef \
+                  -font Arial-Bold -pointsize 28 -fill '#2c3e50' \
+                  -gravity North -annotate +0+60 "Cronux" \
+                  -font Arial -pointsize 16 -fill '#34495e' \
+                  -gravity North -annotate +0+100 "Sistema de Control de Versiones Local" \
+                  -font Arial -pointsize 14 -fill '#7f8c8d' \
+                  -gravity North -annotate +0+130 "v${{ github.event.inputs.version || '3.0.0' }}" \
+                  -font Arial -pointsize 12 -fill '#95a5a6' \
+                  -gravity South -annotate +0+40 "Arrastra Cronux.app a Applications para instalar" \
+                  "$DMG_BACKGROUND"
+        elif [ -f "assets/dmgimagen.png" ]; then
+          cp "assets/dmgimagen.png" "$DMG_BACKGROUND"
+        fi
+        
+        # Crear DMG personalizado
         DMG_NAME="Cronux-v${{ github.event.inputs.version || '3.0.0' }}-build${{ github.run_number }}"
-        hdiutil create -volname "Cronux" -srcfolder "$APP_PATH" -ov -format UDZO "${DMG_NAME}.dmg"
+        DMG_TEMP="${DMG_NAME}_temp.dmg"
+        DMG_FINAL="${DMG_NAME}.dmg"
+        VOLUME_NAME="Cronux"
+        
+        # Crear directorio de staging
+        DMG_DIR="dmg_staging"
+        rm -rf "$DMG_DIR"
+        mkdir -p "$DMG_DIR"
+        
+        # Copiar app y crear enlace a Applications
+        cp -R "$APP_PATH" "$DMG_DIR/"
+        ln -s /Applications "$DMG_DIR/Applications"
+        
+        # Agregar imagen de fondo si existe
+        if [ -f "$DMG_BACKGROUND" ]; then
+          mkdir -p "$DMG_DIR/.background"
+          cp "$DMG_BACKGROUND" "$DMG_DIR/.background/background.png"
+        fi
+        
+        # Crear DMG temporal
+        hdiutil create -volname "$VOLUME_NAME" -srcfolder "$DMG_DIR" -ov -format UDRW "$DMG_TEMP"
+        
+        # Montar y personalizar
+        MOUNT_DIR=$(hdiutil attach -readwrite -noverify -noautoopen "$DMG_TEMP" | grep -E '^/dev/' | sed 1q | awk '{print $3}')
+        
+        if [ -n "$MOUNT_DIR" ]; then
+          echo "✅ DMG mounted at: $MOUNT_DIR"
+          
+          # Personalizar con AppleScript
+          osascript << EOF
+          tell application "Finder"
+              tell disk "$VOLUME_NAME"
+                  open
+                  set current view of container window to icon view
+                  set toolbar visible of container window to false
+                  set statusbar visible of container window to false
+                  set the bounds of container window to {100, 100, 740, 580}
+                  set viewOptions to the icon view options of container window
+                  set arrangement of viewOptions to not arranged
+                  set icon size of viewOptions to 128
+                  try
+                      set background picture of viewOptions to file ".background:background.png"
+                  end try
+                  set position of item "Cronux.app" of container window to {180, 280}
+                  set position of item "Applications" of container window to {460, 280}
+                  update without registering applications
+                  delay 2
+                  close
+              end tell
+          end tell
+        EOF
+          
+          # Desmontar
+          hdiutil detach "$MOUNT_DIR"
+        fi
+        
+        # Convertir a DMG final comprimido
+        hdiutil convert "$DMG_TEMP" -format UDZO -imagekey zlib-level=9 -o "$DMG_FINAL"
+        
+        # Limpiar
+        rm -f "$DMG_TEMP" "$DMG_BACKGROUND"
+        rm -rf "$DMG_DIR"
+        
         echo "DMG_NAME=${DMG_NAME}" >> $GITHUB_ENV
-        echo "✅ DMG created: ${DMG_NAME}.dmg ($(du -sh "${DMG_NAME}.dmg" | cut -f1))"
+        echo "✅ Custom DMG created: ${DMG_NAME}.dmg ($(du -sh "${DMG_NAME}.dmg" | cut -f1))"
         
     - name: Upload DMG
       uses: actions/upload-artifact@v4
